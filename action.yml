@@ -31,6 +31,14 @@ inputs:
     required: false
     default: "false"
     description: "If true, this tells the clients that this modification shouldn't result in a user notification. default: false"
+  retryCount:
+    required: false
+    default: "3"
+    description: "If > 0 then try retry failed requests. default: 3"
+  retryDelay:
+    required: false
+    default: "1000"
+    description: "Window for progressive delaying between retryes. 1000 -> [1000, 2000, 3000] default: 1000"
 runs:
   using: "node12"
   main: "dist/index.js"

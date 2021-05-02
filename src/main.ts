@@ -3,17 +3,20 @@ import * as core from '@actions/core'
 import * as fs from 'fs'
 import { join, basename } from 'path'
 import { makeUpload } from './upload'
-import { asBoolean, isDirectory } from './utils'
+import { asBoolean, asNumber, delay, isDirectory, retry } from './utils'
 import { DropboxResponseError } from 'dropbox'
 
 const accessToken = core.getInput('dropbox_access_token')
 const src = core.getInput('src')
 const dest = core.getInput('dest')
-const multiple = asBoolean(core.getInput('multiple'))
+
+const retryCount = asNumber(core.getInput('retry') || "3")
+const retryDelay = asNumber(core.getInput('retryDelay') || "1000")
 
 const mode = core.getInput('mode')
 const autorename = asBoolean(core.getInput('autorename'))
 const mute = asBoolean(core.getInput('mute'))
+const multiple = asBoolean(core.getInput('multiple'))
 
 async function run() {
   try {
@@ -35,7 +38,19 @@ async function run() {
         files.map(async (file) => {
           const path = join(dest, file)
           const contents = await fs.promises.readFile(file)
-          await upload(path, contents, { mode, autorename, mute })
+          if (retryCount > 0) {
+            await retry(async (left) => {
+              if (left < retryCount) {
+                const attempt = retryCount - left
+                const delayMs = retryDelay * attempt
+                core.warning(`Retry #${retryCount - left}/${retryCount} for ${file}: next request after ${delayMs}ms`)
+                await delay(delayMs)
+              }
+              return upload(path, contents, { mode, autorename, mute })
+            }, retryCount)
+          } else {
+            await upload(path, contents, { mode, autorename, mute })
+          }
           core.info(`Uploaded: ${file} -> ${path}`)
         })
       )
