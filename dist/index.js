@@ -89,8 +89,6 @@ async function run() {
         if (error instanceof dropbox_1.DropboxResponseError) {
             core.error(error.error);
         }
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-        core.error(error?.error);
         core.setFailed(error);
     }
 }
