@@ -39,7 +39,7 @@ async function run() {
           const path = join(dest, file)
           const contents = await fs.promises.readFile(file)
           if (retryCount > 0) {
-            await retry(async (left) => {
+            const response = await retry(async (left) => {
               if (left < retryCount) {
                 const attempt = retryCount - left
                 const delayMs = retryDelay * attempt
@@ -48,10 +48,11 @@ async function run() {
               }
               return upload(path, contents, { mode, autorename, mute })
             }, retryCount)
+            core.info(`Uploaded: ${file} -> ${JSON.stringify(response)}`)
           } else {
-            await upload(path, contents, { mode, autorename, mute })
+            const response = await upload(path, contents, { mode, autorename, mute })
+            core.info(`Uploaded: ${file} -> ${JSON.stringify(response)}`)
           }
-          core.info(`Uploaded: ${file} -> ${path}`)
         })
       )
     }
