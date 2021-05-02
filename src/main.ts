@@ -27,10 +27,10 @@ async function run() {
       if (isDirectory(dest)) {
         const path = join(dest, basename(src))
         await upload(path, contents, { mode, autorename, mute })
-        core.info(`Uploaded: ${src} -> ${path}`)
+        core.info(`Uploaded file 1: ${src} -> ${path}`)
       } else {
         await upload(dest, contents, { mode, autorename, mute })
-        core.info(`Uploaded: ${src} -> ${dest}`)
+        core.info(`Uploaded file 2: ${src} -> ${dest}`)
       }
     } else {
       const files = await globby(src)
@@ -48,10 +48,10 @@ async function run() {
               }
               return upload(path, contents, { mode, autorename, mute })
             }, retryCount)
-            core.info(`Uploaded: ${file} -> ${JSON.stringify(response)}`)
+            core.info(`Uploaded file 3: ${file} -> ${JSON.stringify(response)}`)
           } else {
             const response = await upload(path, contents, { mode, autorename, mute })
-            core.info(`Uploaded: ${file} -> ${JSON.stringify(response)}`)
+            core.info(`Uploaded file 4: ${file} -> ${JSON.stringify(response)}`)
           }
         })
       )
