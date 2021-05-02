@@ -36,13 +36,16 @@ const fs = __importStar(__webpack_require__(5747));
 const path_1 = __webpack_require__(5622);
 const upload_1 = __webpack_require__(4831);
 const utils_1 = __webpack_require__(918);
+const dropbox_1 = __webpack_require__(8939);
 const accessToken = core.getInput('dropbox_access_token');
 const src = core.getInput('src');
 const dest = core.getInput('dest');
-const multiple = utils_1.asBoolean(core.getInput('multiple'));
+const retryCount = utils_1.asNumber(core.getInput('retryCount') || "3");
+const retryDelay = utils_1.asNumber(core.getInput('retryDelay') || "1000");
 const mode = core.getInput('mode');
 const autorename = utils_1.asBoolean(core.getInput('autorename'));
 const mute = utils_1.asBoolean(core.getInput('mute'));
+const multiple = utils_1.asBoolean(core.getInput('multiple'));
 async function run() {
     try {
         const { upload } = upload_1.makeUpload(accessToken);
@@ -51,11 +54,11 @@ async function run() {
             if (utils_1.isDirectory(dest)) {
                 const path = path_1.join(dest, path_1.basename(src));
                 await upload(path, contents, { mode, autorename, mute });
-                core.info(`Uploaded: ${src} -> ${path}`);
+                core.info(`Uploaded file 1: ${src} -> ${path}`);
             }
             else {
                 await upload(dest, contents, { mode, autorename, mute });
-                core.info(`Uploaded: ${src} -> ${dest}`);
+                core.info(`Uploaded file 2: ${src} -> ${dest}`);
             }
         }
         else {
@@ -63,12 +66,31 @@ async function run() {
             await Promise.all(files.map(async (file) => {
                 const path = path_1.join(dest, file);
                 const contents = await fs.promises.readFile(file);
-                await upload(path, contents, { mode, autorename, mute });
-                core.info(`Uploaded: ${file} -> ${path}`);
+                if (retryCount > 0) {
+                    const response = await utils_1.retry(async (left) => {
+                        if (left < retryCount) {
+                            const attempt = retryCount - left;
+                            const delayMs = retryDelay * attempt;
+                            core.warning(`Retry #${retryCount - left}/${retryCount} for ${file}: next request after ${delayMs}ms`);
+                            await utils_1.delay(delayMs);
+                        }
+                        return upload(path, contents, { mode, autorename, mute });
+                    }, retryCount);
+                    core.info(`Uploaded file 3: ${file} -> ${JSON.stringify(response)}`);
+                }
+                else {
+                    const response = await upload(path, contents, { mode, autorename, mute });
+                    core.info(`Uploaded file 4: ${file} -> ${JSON.stringify(response)}`);
+                }
             }));
         }
     }
     catch (error) {
+        if (error instanceof dropbox_1.DropboxResponseError) {
+            core.error(error.error);
+        }
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+        core.error(error?.error);
         core.setFailed(error);
     }
 }
@@ -93,7 +115,7 @@ function makeUpload(accessToken) {
     const dropbox = new dropbox_1.Dropbox({ accessToken, fetch: node_fetch_1.default });
     return {
         upload: async (path, contents, options) => {
-            await dropbox.filesUpload({
+            return await dropbox.filesUpload({
                 path,
                 contents,
                 mode: getMode(options.mode),
@@ -127,7 +149,7 @@ function getMode(mode) {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.asBoolean = exports.isDirectory = void 0;
+exports.delay = exports.retry = exports.asNumber = exports.asBoolean = exports.isDirectory = void 0;
 function isDirectory(path) {
     return path.endsWith('/');
 }
@@ -136,6 +158,30 @@ function asBoolean(s) {
     return s.toLowerCase() === 'true';
 }
 exports.asBoolean = asBoolean;
+function asNumber(s) {
+    return Number.parseInt(s);
+}
+exports.asNumber = asNumber;
+async function retry(request, maxRetryCount = 3) {
+    const countLeft = maxRetryCount - 1;
+    try {
+        const response = await request(countLeft);
+        return response;
+    }
+    catch (e) {
+        if (maxRetryCount > 0) {
+            return retry(request, countLeft);
+        }
+        else {
+            return Promise.reject(e);
+        }
+    }
+}
+exports.retry = retry;
+function delay(timeout = 1000) {
+    return new Promise(resolver => setTimeout(resolver, timeout));
+}
+exports.delay = delay;
 
 
 /***/ }),
@@ -336,6 +382,7 @@ exports.getInput = getInput;
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function setOutput(name, value) {
+    process.stdout.write(os.EOL);
     command_1.issueCommand('set-output', { name }, value);
 }
 exports.setOutput = setOutput;
@@ -539,6 +586,7 @@ exports.toCommandValue = toCommandValue;
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.createFileSystemAdapter = exports.FILE_SYSTEM_ADAPTER = void 0;
 const fs = __webpack_require__(5747);
 exports.FILE_SYSTEM_ADAPTER = {
     lstat: fs.lstat,
@@ -565,6 +613,7 @@ exports.createFileSystemAdapter = createFileSystemAdapter;
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.IS_SUPPORT_READDIR_WITH_FILE_TYPES = void 0;
 const NODE_PROCESS_VERSION_PARTS = process.versions.node.split('.');
 const MAJOR_VERSION = parseInt(NODE_PROCESS_VERSION_PARTS[0], 10);
 const MINOR_VERSION = parseInt(NODE_PROCESS_VERSION_PARTS[1], 10);
@@ -586,6 +635,7 @@ exports.IS_SUPPORT_READDIR_WITH_FILE_TYPES = IS_MATCHED_BY_MAJOR || IS_MATCHED_B
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.Settings = exports.scandirSync = exports.scandir = void 0;
 const async = __webpack_require__(4507);
 const sync = __webpack_require__(9560);
 const settings_1 = __webpack_require__(8662);
@@ -618,10 +668,12 @@ function getSettings(settingsOrOptions = {}) {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.readdir = exports.readdirWithFileTypes = exports.read = void 0;
 const fsStat = __webpack_require__(109);
 const rpl = __webpack_require__(5288);
 const constants_1 = __webpack_require__(8838);
 const utils = __webpack_require__(6297);
+const common = __webpack_require__(3847);
 function read(directory, settings, callback) {
     if (!settings.stats && constants_1.IS_SUPPORT_READDIR_WITH_FILE_TYPES) {
         return readdirWithFileTypes(directory, settings, callback);
@@ -637,7 +689,7 @@ function readdirWithFileTypes(directory, settings, callback) {
         const entries = dirents.map((dirent) => ({
             dirent,
             name: dirent.name,
-            path: `${directory}${settings.pathSegmentSeparator}${dirent.name}`
+            path: common.joinPathSegments(directory, dirent.name, settings.pathSegmentSeparator)
         }));
         if (!settings.followSymbolicLinks) {
             return callSuccessCallback(callback, entries);
@@ -674,7 +726,7 @@ function readdir(directory, settings, callback) {
         if (readdirError !== null) {
             return callFailureCallback(callback, readdirError);
         }
-        const filepaths = names.map((name) => `${directory}${settings.pathSegmentSeparator}${name}`);
+        const filepaths = names.map((name) => common.joinPathSegments(directory, name, settings.pathSegmentSeparator));
         const tasks = filepaths.map((filepath) => {
             return (done) => fsStat.stat(filepath, settings.fsStatSettings, done);
         });
@@ -710,15 +762,38 @@ function callSuccessCallback(callback, result) {
 
 /***/ }),
 
+/***/ 3847:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.joinPathSegments = void 0;
+function joinPathSegments(a, b, separator) {
+    /**
+     * The correct handling of cases when the first segment is a root (`/`, `C:/`) or UNC path (`//?/C:/`).
+     */
+    if (a.endsWith(separator)) {
+        return a + b;
+    }
+    return a + separator + b;
+}
+exports.joinPathSegments = joinPathSegments;
+
+
+/***/ }),
+
 /***/ 9560:
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.readdir = exports.readdirWithFileTypes = exports.read = void 0;
 const fsStat = __webpack_require__(109);
 const constants_1 = __webpack_require__(8838);
 const utils = __webpack_require__(6297);
+const common = __webpack_require__(3847);
 function read(directory, settings) {
     if (!settings.stats && constants_1.IS_SUPPORT_READDIR_WITH_FILE_TYPES) {
         return readdirWithFileTypes(directory, settings);
@@ -732,7 +807,7 @@ function readdirWithFileTypes(directory, settings) {
         const entry = {
             dirent,
             name: dirent.name,
-            path: `${directory}${settings.pathSegmentSeparator}${dirent.name}`
+            path: common.joinPathSegments(directory, dirent.name, settings.pathSegmentSeparator)
         };
         if (entry.dirent.isSymbolicLink() && settings.followSymbolicLinks) {
             try {
@@ -752,7 +827,7 @@ exports.readdirWithFileTypes = readdirWithFileTypes;
 function readdir(directory, settings) {
     const names = settings.fs.readdirSync(directory);
     return names.map((name) => {
-        const entryPath = `${directory}${settings.pathSegmentSeparator}${name}`;
+        const entryPath = common.joinPathSegments(directory, name, settings.pathSegmentSeparator);
         const stats = fsStat.statSync(entryPath, settings.fsStatSettings);
         const entry = {
             name,
@@ -794,7 +869,7 @@ class Settings {
         });
     }
     _getValue(option, value) {
-        return option === undefined ? value : option;
+        return option !== null && option !== void 0 ? option : value;
     }
 }
 exports.default = Settings;
@@ -808,6 +883,7 @@ exports.default = Settings;
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.createDirentFromStats = void 0;
 class DirentFromStats {
     constructor(name, stats) {
         this.name = name;
@@ -834,6 +910,7 @@ exports.createDirentFromStats = createDirentFromStats;
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.fs = void 0;
 const fs = __webpack_require__(883);
 exports.fs = fs;
 
@@ -846,6 +923,7 @@ exports.fs = fs;
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.createFileSystemAdapter = exports.FILE_SYSTEM_ADAPTER = void 0;
 const fs = __webpack_require__(5747);
 exports.FILE_SYSTEM_ADAPTER = {
     lstat: fs.lstat,
@@ -870,6 +948,7 @@ exports.createFileSystemAdapter = createFileSystemAdapter;
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.statSync = exports.stat = exports.Settings = void 0;
 const async = __webpack_require__(4147);
 const sync = __webpack_require__(4527);
 const settings_1 = __webpack_require__(2410);
@@ -902,6 +981,7 @@ function getSettings(settingsOrOptions = {}) {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.read = void 0;
 function read(path, settings, callback) {
     settings.fs.lstat(path, (lstatError, lstat) => {
         if (lstatError !== null) {
@@ -941,6 +1021,7 @@ function callSuccessCallback(callback, result) {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.read = void 0;
 function read(path, settings) {
     const lstat = settings.fs.lstatSync(path);
     if (!lstat.isSymbolicLink() || !settings.followSymbolicLink) {
@@ -981,7 +1062,7 @@ class Settings {
         this.throwErrorOnBrokenSymbolicLink = this._getValue(this._options.throwErrorOnBrokenSymbolicLink, true);
     }
     _getValue(option, value) {
-        return option === undefined ? value : option;
+        return option !== null && option !== void 0 ? option : value;
     }
 }
 exports.default = Settings;
@@ -995,6 +1076,7 @@ exports.default = Settings;
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.Settings = exports.walkStream = exports.walkSync = exports.walk = void 0;
 const async_1 = __webpack_require__(7523);
 const stream_1 = __webpack_require__(6737);
 const sync_1 = __webpack_require__(3068);
@@ -1083,7 +1165,11 @@ class StreamProvider {
         this._stream = new stream_1.Readable({
             objectMode: true,
             read: () => { },
-            destroy: this._reader.destroy.bind(this._reader)
+            destroy: () => {
+                if (!this._reader.isDestroyed) {
+                    this._reader.destroy();
+                }
+            }
         });
     }
     read() {
@@ -1161,6 +1247,9 @@ class AsyncReader extends reader_1.default {
         });
         return this._emitter;
     }
+    get isDestroyed() {
+        return this._isDestroyed;
+    }
     destroy() {
         if (this._isDestroyed) {
             throw new Error('The reader is already destroyed');
@@ -1197,7 +1286,7 @@ class AsyncReader extends reader_1.default {
         });
     }
     _handleError(error) {
-        if (!common.isFatalError(this._settings, error)) {
+        if (this._isDestroyed || !common.isFatalError(this._settings, error)) {
             return;
         }
         this._isFatalError = true;
@@ -1234,6 +1323,7 @@ exports.default = AsyncReader;
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.joinPathSegments = exports.replacePathSegmentSeparator = exports.isAppliedFilter = exports.isFatalError = void 0;
 function isFatalError(settings, error) {
     if (settings.errorFilter === null) {
         return true;
@@ -1246,12 +1336,18 @@ function isAppliedFilter(filter, value) {
 }
 exports.isAppliedFilter = isAppliedFilter;
 function replacePathSegmentSeparator(filepath, separator) {
-    return filepath.split(/[\\/]/).join(separator);
+    return filepath.split(/[/\\]/).join(separator);
 }
 exports.replacePathSegmentSeparator = replacePathSegmentSeparator;
 function joinPathSegments(a, b, separator) {
     if (a === '') {
         return b;
+    }
+    /**
+     * The correct handling of cases when the first segment is a root (`/`, `C:/`) or UNC path (`//?/C:/`).
+     */
+    if (a.endsWith(separator)) {
+        return a + b;
     }
     return a + separator + b;
 }
@@ -1372,7 +1468,7 @@ class Settings {
         });
     }
     _getValue(option, value) {
-        return option === undefined ? value : option;
+        return option !== null && option !== void 0 ? option : value;
     }
 }
 exports.default = Settings;
@@ -2329,7 +2425,7 @@ exports.flatten = (...args) => {
 "use strict";
 
 const path = __webpack_require__(5622);
-const pathType = __webpack_require__(3433);
+const pathType = __webpack_require__(3936);
 
 const getExtensions = extensions => extensions.length > 1 ? `{${extensions.join(',')}}` : extensions[0];
 
@@ -2402,6 +2498,57 @@ module.exports.sync = (input, options) => {
 
 	return [].concat.apply([], globs); // eslint-disable-line prefer-spread
 };
+
+
+/***/ }),
+
+/***/ 3936:
+/***/ ((__unused_webpack_module, exports, __webpack_require__) => {
+
+"use strict";
+
+const {promisify} = __webpack_require__(1669);
+const fs = __webpack_require__(5747);
+
+async function isType(fsStatType, statsMethodName, filePath) {
+	if (typeof filePath !== 'string') {
+		throw new TypeError(`Expected a string, got ${typeof filePath}`);
+	}
+
+	try {
+		const stats = await promisify(fs[fsStatType])(filePath);
+		return stats[statsMethodName]();
+	} catch (error) {
+		if (error.code === 'ENOENT') {
+			return false;
+		}
+
+		throw error;
+	}
+}
+
+function isTypeSync(fsStatType, statsMethodName, filePath) {
+	if (typeof filePath !== 'string') {
+		throw new TypeError(`Expected a string, got ${typeof filePath}`);
+	}
+
+	try {
+		return fs[fsStatType](filePath)[statsMethodName]();
+	} catch (error) {
+		if (error.code === 'ENOENT') {
+			return false;
+		}
+
+		throw error;
+	}
+}
+
+exports.isFile = isType.bind(null, 'stat', 'isFile');
+exports.isDirectory = isType.bind(null, 'stat', 'isDirectory');
+exports.isSymlink = isType.bind(null, 'lstat', 'isSymbolicLink');
+exports.isFileSync = isTypeSync.bind(null, 'statSync', 'isFile');
+exports.isDirectorySync = isTypeSync.bind(null, 'statSync', 'isDirectory');
+exports.isSymlinkSync = isTypeSync.bind(null, 'lstatSync', 'isSymbolicLink');
 
 
 /***/ }),
@@ -5385,7 +5532,8 @@ routes.teamPropertiesTemplateAdd = function (arg) {
   return this.request('team/properties/template/add', arg, 'team', 'api', 'rpc');
 };
 /**
- * Permission : Team member file access.
+ * Permission : Team member file access. The scope for the route is
+ * files.team_metadata.write.
  * @function Dropbox#teamPropertiesTemplateGet
  * @deprecated
  * @arg {FilePropertiesGetTemplateArg} arg - The request parameters.
@@ -5397,7 +5545,8 @@ routes.teamPropertiesTemplateGet = function (arg) {
   return this.request('team/properties/template/get', arg, 'team', 'api', 'rpc');
 };
 /**
- * Permission : Team member file access.
+ * Permission : Team member file access. The scope for the route is
+ * files.team_metadata.write.
  * @function Dropbox#teamPropertiesTemplateList
  * @deprecated
  * @returns {Promise.<DropboxResponse<FilePropertiesListTemplateResult>, Error.<FilePropertiesTemplateError>>}
@@ -5721,6 +5870,14 @@ if (typeof window !== 'undefined') {
   crypto = window.crypto || window.msCrypto; // for IE11
 } else {
   crypto = __webpack_require__(6417); // eslint-disable-line global-require
+}
+
+var Encoder;
+
+if (typeof TextEncoder === 'undefined') {
+  Encoder = __webpack_require__(1669).TextEncoder; // eslint-disable-line global-require
+} else {
+  Encoder = TextEncoder;
 } // Expiration is 300 seconds but needs to be in milliseconds for Date object
 
 
@@ -5869,7 +6026,7 @@ var DropboxAuth = /*#__PURE__*/function () {
       var codeVerifier = crypto.randomBytes(PKCELength);
       codeVerifier = codeVerifier.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '').substr(0, 128);
       this.codeVerifier = codeVerifier;
-      var encoder = new TextEncoder();
+      var encoder = new Encoder();
       var codeData = encoder.encode(codeVerifier);
       var codeChallenge = crypto.createHash('sha256').update(codeData).digest();
       codeChallenge = codeChallenge.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
@@ -5975,6 +6132,7 @@ var DropboxAuth = /*#__PURE__*/function () {
      * @arg {String} redirectUri - A URL to redirect the user to after
      * authenticating. This must be added to your app through the admin interface.
      * @arg {String} code - An OAuth2 code.
+     * @returns {Object} An object containing the token and related info (if applicable)
     */
 
   }, {
@@ -6026,7 +6184,7 @@ var DropboxAuth = /*#__PURE__*/function () {
     key: "checkAndRefreshAccessToken",
     value: function checkAndRefreshAccessToken() {
       var canRefresh = this.getRefreshToken() && this.getClientId();
-      var needsRefresh = this.getAccessTokenExpiresAt() && new Date(Date.now() + TokenExpirationBuffer) >= this.getAccessTokenExpiresAt();
+      var needsRefresh = !this.getAccessTokenExpiresAt() || new Date(Date.now() + TokenExpirationBuffer) >= this.getAccessTokenExpiresAt();
       var needsToken = !this.getAccessToken();
 
       if ((needsRefresh || needsToken) && canRefresh) {
@@ -6234,7 +6392,7 @@ var b64 = typeof btoa === 'undefined' ? function (str) {
  * If this is set, the remaining parameters will be ignored.
  * @arg {String} [options.accessToken] - An access token for making authenticated
  * requests.
- * @arg {Date} [options.AccessTokenExpiresAt] - Date of the current access token's
+ * @arg {Date} [options.accessTokenExpiresAt] - Date of the current access token's
  * expiration (if available)
  * @arg {String} [options.refreshToken] - A refresh token for retrieving access tokens
  * @arg {String} [options.clientId] - The client id for your app. Used to create
@@ -6416,11 +6574,11 @@ exports.default = Dropbox;
 "use strict";
 
 
+function _typeof(obj) { "@babel/helpers - typeof"; if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { _typeof = function _typeof(obj) { return typeof obj; }; } else { _typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return _typeof(obj); }
+
 Object.defineProperty(exports, "__esModule", ({
   value: true
 }));
-
-function _typeof(obj) { "@babel/helpers - typeof"; if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { _typeof = function _typeof(obj) { return typeof obj; }; } else { _typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return _typeof(obj); }
 
 function _classCallCheck(instance, Constructor) { if (!(instance instanceof Constructor)) { throw new TypeError("Cannot call a class as a function"); } }
 
@@ -6446,6 +6604,11 @@ function _getPrototypeOf(o) { _getPrototypeOf = Object.setPrototypeOf ? Object.g
 
 /**
  * The response class of HTTP errors from API calls using the Dropbox SDK.
+ * @class DropboxResponseError
+ * @classdesc The response class of HTTP errors from API calls using the Dropbox SDK.
+ * @arg {number} status - HTTP Status code of the call
+ * @arg {Object} headers - Headers returned from the call
+ * @arg {Object} error - Serialized Error of the call
  */
 var DropboxResponseError = /*#__PURE__*/exports.DropboxResponseError = function (_Error) {
   _inherits(DropboxResponseError, _Error);
@@ -7369,7 +7532,11 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.DEFAULT_FILE_SYSTEM_ADAPTER = void 0;
 const fs = __webpack_require__(5747);
 const os = __webpack_require__(2087);
-const CPU_COUNT = os.cpus().length;
+/**
+ * The `os.cpus` method can return zero. We expect the number of cores to be greater than zero.
+ * https://github.com/nodejs/node/blob/7faeddf23a98c53896f8b574a6e66589e8fb1eb8/lib/os.js#L106-L107
+ */
+const CPU_COUNT = Math.max(os.cpus().length, 1);
 exports.DEFAULT_FILE_SYSTEM_ADAPTER = {
     lstat: fs.lstat,
     lstatSync: fs.lstatSync,
@@ -7758,6 +7925,10 @@ function fastqueue (context, worker, concurrency) {
     context = null
   }
 
+  if (concurrency < 1) {
+    throw new Error('fastqueue concurrency must be greater than 1')
+  }
+
   var cache = reusify(Task)
   var queueHead = null
   var queueTail = null
@@ -7945,7 +8116,57 @@ function Task () {
   }
 }
 
+function queueAsPromised (context, worker, concurrency) {
+  if (typeof context === 'function') {
+    concurrency = worker
+    worker = context
+    context = null
+  }
+
+  function asyncWrapper (arg, cb) {
+    worker.call(this, arg)
+      .then(function (res) {
+        cb(null, res)
+      }, cb)
+  }
+
+  var queue = fastqueue(context, asyncWrapper, concurrency)
+
+  var pushCb = queue.push
+  var unshiftCb = queue.unshift
+
+  queue.push = push
+  queue.unshift = unshift
+
+  return queue
+
+  function push (value) {
+    return new Promise(function (resolve, reject) {
+      pushCb(value, function (err, result) {
+        if (err) {
+          reject(err)
+          return
+        }
+        resolve(result)
+      })
+    })
+  }
+
+  function unshift (value) {
+    return new Promise(function (resolve, reject) {
+      unshiftCb(value, function (err, result) {
+        if (err) {
+          reject(err)
+          return
+        }
+        resolve(result)
+      })
+    })
+  }
+}
+
 module.exports = fastqueue
+module.exports.promise = queueAsPromised
 
 
 /***/ }),
@@ -8219,7 +8440,7 @@ var isWin32 = __webpack_require__(2087).platform() === 'win32';
 
 var slash = '/';
 var backslash = /\\/g;
-var enclosure = /[\{\[].*[\/]*.*[\}\]]$/;
+var enclosure = /[\{\[].*[\}\]]$/;
 var globby = /(^|[^\\])([\{\[]|\([^\)]+$)/;
 var escaped = /\\([\!\*\?\|\[\]\(\)\{\}])/g;
 
@@ -8227,6 +8448,7 @@ var escaped = /\\([\!\*\?\|\[\]\(\)\{\}])/g;
  * @param {string} str
  * @param {Object} opts
  * @param {boolean} [opts.flipBackslashes=true]
+ * @returns {string}
  */
 module.exports = function globParent(str, opts) {
   var options = Object.assign({ flipBackslashes: true }, opts);
@@ -8265,7 +8487,7 @@ const {promisify} = __webpack_require__(1669);
 const fs = __webpack_require__(5747);
 const path = __webpack_require__(5622);
 const fastGlob = __webpack_require__(3664);
-const gitIgnore = __webpack_require__(4777);
+const gitIgnore = __webpack_require__(2069);
 const slash = __webpack_require__(4111);
 
 const DEFAULT_IGNORE = [
@@ -8296,19 +8518,21 @@ const parseGitIgnore = (content, options) => {
 };
 
 const reduceIgnore = files => {
-	return files.reduce((ignores, file) => {
+	const ignores = gitIgnore();
+	for (const file of files) {
 		ignores.add(parseGitIgnore(file.content, {
 			cwd: file.cwd,
 			fileName: file.filePath
 		}));
-		return ignores;
-	}, gitIgnore());
+	}
+
+	return ignores;
 };
 
 const ensureAbsolutePathForCwd = (cwd, p) => {
 	cwd = slash(cwd);
 	if (path.isAbsolute(p)) {
-		if (p.startsWith(cwd)) {
+		if (slash(p).startsWith(cwd)) {
 			return p;
 		}
 
@@ -8319,7 +8543,7 @@ const ensureAbsolutePathForCwd = (cwd, p) => {
 };
 
 const getIsIgnoredPredecate = (ignores, cwd) => {
-	return p => ignores.ignores(slash(path.relative(cwd, ensureAbsolutePathForCwd(cwd, p))));
+	return p => ignores.ignores(slash(path.relative(cwd, ensureAbsolutePathForCwd(cwd, p.path || p))));
 };
 
 const getFile = async (file, cwd) => {
@@ -8413,7 +8637,7 @@ const checkCwdOption = (options = {}) => {
 	let stat;
 	try {
 		stat = fs.statSync(options.cwd);
-	} catch (_) {
+	} catch {
 		return;
 	}
 
@@ -8444,7 +8668,7 @@ const generateGlobTasks = (patterns, taskOptions) => {
 
 		const ignore = patterns
 			.slice(index)
-			.filter(isNegative)
+			.filter(pattern => isNegative(pattern))
 			.map(pattern => pattern.slice(1));
 
 		const options = {
@@ -8526,26 +8750,30 @@ module.exports = async (patterns, options) => {
 module.exports.sync = (patterns, options) => {
 	const globTasks = generateGlobTasks(patterns, options);
 
-	const tasks = globTasks.reduce((tasks, task) => {
+	const tasks = [];
+	for (const task of globTasks) {
 		const newTask = getPattern(task, dirGlob.sync).map(globToTask(task));
-		return tasks.concat(newTask);
-	}, []);
+		tasks.push(...newTask);
+	}
 
 	const filter = getFilterSync(options);
 
-	return tasks.reduce(
-		(matches, task) => arrayUnion(matches, fastGlob.sync(task.pattern, task.options)),
-		[]
-	).filter(path_ => !filter(path_));
+	let matches = [];
+	for (const task of tasks) {
+		matches = arrayUnion(matches, fastGlob.sync(task.pattern, task.options));
+	}
+
+	return matches.filter(path_ => !filter(path_));
 };
 
 module.exports.stream = (patterns, options) => {
 	const globTasks = generateGlobTasks(patterns, options);
 
-	const tasks = globTasks.reduce((tasks, task) => {
+	const tasks = [];
+	for (const task of globTasks) {
 		const newTask = getPattern(task, dirGlob.sync).map(globToTask(task));
-		return tasks.concat(newTask);
-	}, []);
+		tasks.push(...newTask);
+	}
 
 	const filter = getFilterSync(options);
 	const filterStream = new FilterStream(p => !filter(p));
@@ -8567,61 +8795,7 @@ module.exports.gitignore = gitignore;
 
 /***/ }),
 
-/***/ 2408:
-/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
-
-"use strict";
-
-const {Transform} = __webpack_require__(2413);
-
-class ObjectTransform extends Transform {
-	constructor() {
-		super({
-			objectMode: true
-		});
-	}
-}
-
-class FilterStream extends ObjectTransform {
-	constructor(filter) {
-		super();
-		this._filter = filter;
-	}
-
-	_transform(data, encoding, callback) {
-		if (this._filter(data)) {
-			this.push(data);
-		}
-
-		callback();
-	}
-}
-
-class UniqueStream extends ObjectTransform {
-	constructor() {
-		super();
-		this._pushed = new Set();
-	}
-
-	_transform(data, encoding, callback) {
-		if (!this._pushed.has(data)) {
-			this.push(data);
-			this._pushed.add(data);
-		}
-
-		callback();
-	}
-}
-
-module.exports = {
-	FilterStream,
-	UniqueStream
-};
-
-
-/***/ }),
-
-/***/ 4777:
+/***/ 2069:
 /***/ ((module) => {
 
 // A simple implementation of make-array
@@ -9225,6 +9399,60 @@ if (
 
 /***/ }),
 
+/***/ 2408:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+const {Transform} = __webpack_require__(2413);
+
+class ObjectTransform extends Transform {
+	constructor() {
+		super({
+			objectMode: true
+		});
+	}
+}
+
+class FilterStream extends ObjectTransform {
+	constructor(filter) {
+		super();
+		this._filter = filter;
+	}
+
+	_transform(data, encoding, callback) {
+		if (this._filter(data)) {
+			this.push(data);
+		}
+
+		callback();
+	}
+}
+
+class UniqueStream extends ObjectTransform {
+	constructor() {
+		super();
+		this._pushed = new Set();
+	}
+
+	_transform(data, encoding, callback) {
+		if (!this._pushed.has(data)) {
+			this.push(data);
+			this._pushed.add(data);
+		}
+
+		callback();
+	}
+}
+
+module.exports = {
+	FilterStream,
+	UniqueStream
+};
+
+
+/***/ }),
+
 /***/ 6435:
 /***/ ((module) => {
 
@@ -9300,32 +9528,6 @@ module.exports = function isGlob(str, options) {
     }
 
     str = str.slice(idx);
-  }
-  return false;
-};
-
-
-/***/ }),
-
-/***/ 5680:
-/***/ ((module) => {
-
-"use strict";
-/*!
- * is-number <https://github.com/jonschlinkert/is-number>
- *
- * Copyright (c) 2014-present, Jon Schlinkert.
- * Released under the MIT License.
- */
-
-
-
-module.exports = function(num) {
-  if (typeof num === 'number') {
-    return num - num === 0;
-  }
-  if (typeof num === 'string' && num.trim() !== '') {
-    return Number.isFinite ? Number.isFinite(+num) : isFinite(+num);
   }
   return false;
 };
@@ -9495,7 +9697,7 @@ const util = __webpack_require__(1669);
 const braces = __webpack_require__(610);
 const picomatch = __webpack_require__(8569);
 const utils = __webpack_require__(479);
-const isEmptyString = val => typeof val === 'string' && (val === '' || val === './');
+const isEmptyString = val => val === '' || val === './';
 
 /**
  * Returns an array of strings that match one or more glob patterns.
@@ -9507,9 +9709,9 @@ const isEmptyString = val => typeof val === 'string' && (val === '' || val === '
  * console.log(mm(['a.js', 'a.txt'], ['*.js']));
  * //=> [ 'a.js' ]
  * ```
- * @param {String|Array<string>} list List of strings to match.
- * @param {String|Array<string>} patterns One or more glob patterns to use for matching.
- * @param {Object} options See available [options](#options)
+ * @param {String|Array<string>} `list` List of strings to match.
+ * @param {String|Array<string>} `patterns` One or more glob patterns to use for matching.
+ * @param {Object} `options` See available [options](#options)
  * @return {Array} Returns an array of matches
  * @summary false
  * @api public
@@ -9604,9 +9806,9 @@ micromatch.matcher = (pattern, options) => picomatch(pattern, options);
  * console.log(mm.isMatch('a.a', ['b.*', '*.a'])); //=> true
  * console.log(mm.isMatch('a.a', 'b.*')); //=> false
  * ```
- * @param {String} str The string to test.
- * @param {String|Array} patterns One or more glob patterns to use for matching.
- * @param {Object} [options] See available [options](#options).
+ * @param {String} `str` The string to test.
+ * @param {String|Array} `patterns` One or more glob patterns to use for matching.
+ * @param {Object} `[options]` See available [options](#options).
  * @return {Boolean} Returns true if any patterns match `str`
  * @api public
  */
@@ -9672,7 +9874,7 @@ micromatch.not = (list, patterns, options = {}) => {
  * @param {String} `str` The string to match.
  * @param {String|Array} `patterns` Glob pattern to use for matching.
  * @param {Object} `options` See available [options](#options) for changing how matches are performed
- * @return {Boolean} Returns true if the patter matches any part of `str`.
+ * @return {Boolean} Returns true if any of the patterns matches any part of `str`.
  * @api public
  */
 
@@ -9743,7 +9945,7 @@ micromatch.matchKeys = (obj, patterns, options) => {
  * @param {String|Array} `list` The string or array of strings to test. Returns as soon as the first match is found.
  * @param {String|Array} `patterns` One or more glob patterns to use for matching.
  * @param {Object} `options` See available [options](#options) for changing how matches are performed
- * @return {Boolean} Returns true if any patterns match `str`
+ * @return {Boolean} Returns true if any `patterns` matches any of the strings in `list`
  * @api public
  */
 
@@ -9779,7 +9981,7 @@ micromatch.some = (list, patterns, options) => {
  * @param {String|Array} `list` The string or array of strings to test.
  * @param {String|Array} `patterns` One or more glob patterns to use for matching.
  * @param {Object} `options` See available [options](#options) for changing how matches are performed
- * @return {Boolean} Returns true if any patterns match `str`
+ * @return {Boolean} Returns true if all `patterns` matches all of the strings in `list`
  * @api public
  */
 
@@ -9845,7 +10047,7 @@ micromatch.all = (str, patterns, options) => {
  * @param {String} `glob` Glob pattern to use for matching.
  * @param {String} `input` String to match
  * @param {Object} `options` See available [options](#options) for changing how matches are performed
- * @return {Boolean} Returns an array of captures if the input matches the glob pattern, otherwise `null`.
+ * @return {Array|null} Returns an array of captures if the input matches the glob pattern, otherwise `null`.
  * @api public
  */
 
@@ -11617,57 +11819,6 @@ exports.FetchError = FetchError;
 
 /***/ }),
 
-/***/ 3433:
-/***/ ((__unused_webpack_module, exports, __webpack_require__) => {
-
-"use strict";
-
-const {promisify} = __webpack_require__(1669);
-const fs = __webpack_require__(5747);
-
-async function isType(fsStatType, statsMethodName, filePath) {
-	if (typeof filePath !== 'string') {
-		throw new TypeError(`Expected a string, got ${typeof filePath}`);
-	}
-
-	try {
-		const stats = await promisify(fs[fsStatType])(filePath);
-		return stats[statsMethodName]();
-	} catch (error) {
-		if (error.code === 'ENOENT') {
-			return false;
-		}
-
-		throw error;
-	}
-}
-
-function isTypeSync(fsStatType, statsMethodName, filePath) {
-	if (typeof filePath !== 'string') {
-		throw new TypeError(`Expected a string, got ${typeof filePath}`);
-	}
-
-	try {
-		return fs[fsStatType](filePath)[statsMethodName]();
-	} catch (error) {
-		if (error.code === 'ENOENT') {
-			return false;
-		}
-
-		throw error;
-	}
-}
-
-exports.isFile = isType.bind(null, 'stat', 'isFile');
-exports.isDirectory = isType.bind(null, 'stat', 'isDirectory');
-exports.isSymlink = isType.bind(null, 'lstat', 'isSymbolicLink');
-exports.isFileSync = isTypeSync.bind(null, 'statSync', 'isFile');
-exports.isDirectorySync = isTypeSync.bind(null, 'statSync', 'isDirectory');
-exports.isSymlinkSync = isTypeSync.bind(null, 'lstatSync', 'isSymbolicLink');
-
-
-/***/ }),
-
 /***/ 8569:
 /***/ ((module, __unused_webpack_exports, __webpack_require__) => {
 
@@ -12119,7 +12270,7 @@ const parse = (input, options) => {
         output = token.close = `)$))${extglobStar}`;
       }
 
-      if (token.prev.type === 'bos' && eos()) {
+      if (token.prev.type === 'bos') {
         state.negatedExtglob = true;
       }
     }
@@ -13536,13 +13687,15 @@ const scan = (input, options) => {
           isBracket = token.isBracket = true;
           isGlob = token.isGlob = true;
           finished = true;
-
-          if (scanToEnd === true) {
-            continue;
-          }
           break;
         }
       }
+
+      if (scanToEnd === true) {
+        continue;
+      }
+
+      break;
     }
 
     if (opts.nonegate !== true && code === CHAR_EXCLAMATION_MARK && index === start) {
@@ -13762,6 +13915,22 @@ exports.wrapOutput = (input, state = {}, options = {}) => {
 
 /***/ }),
 
+/***/ 9795:
+/***/ ((module) => {
+
+/*! queue-microtask. MIT License. Feross Aboukhadijeh <https://feross.org/opensource> */
+let promise
+
+module.exports = typeof queueMicrotask === 'function'
+  ? queueMicrotask.bind(typeof window !== 'undefined' ? window : global)
+  // reuse resolved promise, and allocate it lazily
+  : cb => (promise || (promise = Promise.resolve()))
+    .then(cb)
+    .catch(err => setTimeout(() => { throw err }, 0))
+
+
+/***/ }),
+
 /***/ 2113:
 /***/ ((module) => {
 
@@ -13804,14 +13973,16 @@ module.exports = reusify
 /***/ }),
 
 /***/ 5288:
-/***/ ((module) => {
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
 
 /*! run-parallel. MIT License. Feross Aboukhadijeh <https://feross.org/opensource> */
 module.exports = runParallel
 
+const queueMicrotask = __webpack_require__(9795)
+
 function runParallel (tasks, cb) {
-  var results, pending, keys
-  var isSync = true
+  let results, pending, keys
+  let isSync = true
 
   if (Array.isArray(tasks)) {
     results = []
@@ -13827,7 +13998,7 @@ function runParallel (tasks, cb) {
       if (cb) cb(err, results)
       cb = null
     }
-    if (isSync) process.nextTick(end)
+    if (isSync) queueMicrotask(end)
     else end()
   }
 
@@ -13891,7 +14062,7 @@ module.exports = path => {
 
 
 
-const isNumber = __webpack_require__(5680);
+const isNumber = __webpack_require__(1523);
 
 const toRegexRange = (min, max, options) => {
   if (isNumber(min) === false) {
@@ -14170,6 +14341,32 @@ toRegexRange.clearCache = () => (toRegexRange.cache = {});
  */
 
 module.exports = toRegexRange;
+
+
+/***/ }),
+
+/***/ 1523:
+/***/ ((module) => {
+
+"use strict";
+/*!
+ * is-number <https://github.com/jonschlinkert/is-number>
+ *
+ * Copyright (c) 2014-present, Jon Schlinkert.
+ * Released under the MIT License.
+ */
+
+
+
+module.exports = function(num) {
+  if (typeof num === 'number') {
+    return num - num === 0;
+  }
+  if (typeof num === 'string' && num.trim() !== '') {
+    return Number.isFinite ? Number.isFinite(+num) : isFinite(+num);
+  }
+  return false;
+};
 
 
 /***/ }),

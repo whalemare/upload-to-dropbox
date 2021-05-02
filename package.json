@@ -9,7 +9,6 @@
     "package": "ncc build --source-map",
     "lint": "run-p lint:*",
     "lint:eslint": "eslint --ext .js,.ts .",
-    "lint:prettier": "prettier **/*.{js,ts} --check",
     "fix": "run-s fix:eslint fix:prettier",
     "fix:eslint": "npm run lint:eslint -- --fix",
     "fix:prettier": "npm run lint:prettier -- --write",
