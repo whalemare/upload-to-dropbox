@@ -10,7 +10,7 @@ const accessToken = core.getInput('dropbox_access_token')
 const src = core.getInput('src')
 const dest = core.getInput('dest')
 
-const retryCount = asNumber(core.getInput('retry') || "3")
+const retryCount = asNumber(core.getInput('retryCount') || "3")
 const retryDelay = asNumber(core.getInput('retryDelay') || "1000")
 
 const mode = core.getInput('mode')
